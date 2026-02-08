@@ -1,0 +1,90 @@
+call:
+  name: Place a Telegram VoIP call
+  description: Generate TTS audio and place a Telegram VoIP call to a target.
+  target:
+    device:
+      integration: telegram_voip
+    entity:
+      integration: telegram_voip
+      domain: sensor
+  fields:
+    target:
+      name: Target
+      description: Telegram username (@user), numeric user id, or phone number in international format (+39333...)
+      required: false
+      selector:
+        text:
+    message:
+      name: Message
+      description: Text to speak via TTS.
+      required: true
+      selector:
+        text:
+          multiline: true
+    topic:
+      name: Topic
+      description: A short topic label shown by the topic sensor (defaults to message).
+      required: false
+      selector:
+        text:
+    image:
+      name: Profile Image
+      description: Path to image file to use as profile photo during call (e.g. /config/www/alert.jpg)
+      required: false
+      selector:
+        text:
+    language:
+      name: Language
+      description: TTS language code (en, it, es, fr, de, pt, zh, ja).
+      required: false
+      selector:
+        select:
+          options:
+            - label: "English"
+              value: "en"
+            - label: "Italian"
+              value: "it"
+            - label: "Spanish"
+              value: "es"
+            - label: "French"
+              value: "fr"
+            - label: "German"
+              value: "de"
+            - label: "Portuguese"
+              value: "pt"
+            - label: "Chinese"
+              value: "zh"
+            - label: "Japanese"
+              value: "ja"
+    ring_timeout:
+      name: Ring timeout
+      description: Hang up if still ringing after this many seconds.
+      required: false
+      selector:
+        number:
+          min: 5
+          max: 120
+          step: 1
+          unit_of_measurement: s
+          mode: box
+    max_duration:
+      name: Max duration
+      description: Maximum call duration in seconds.
+      required: false
+      selector:
+        number:
+          min: 10
+          max: 3600
+          step: 1
+          unit_of_measurement: s
+          mode: box
+
+hangup:
+  name: Hang up
+  description: Hang up the active or ringing call.
+  target:
+    device:
+      integration: telegram_voip
+    entity:
+      integration: telegram_voip
+      domain: sensor

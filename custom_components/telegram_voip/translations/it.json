@@ -1,0 +1,104 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Telegram VoIP - Metodo di Autenticazione",
+        "description": "Scegli come autenticarti con Telegram.",
+        "data": {
+          "auth_method": "Metodo di autenticazione"
+        }
+      },
+      "api_auth": {
+        "title": "Telegram VoIP - Autenticazione API",
+        "description": "Configura chiamate VoIP Telegram usando credenziali API.",
+        "data": {
+          "api_id": "API ID",
+          "api_hash": "API Hash",
+          "phone": "Numero di telefono (formato internazionale, es. +393331112233)",
+          "default_target": "Destinatario predefinito (es. @username)",
+          "session_name": "Nome sessione",
+          "session_dir": "Directory sessione",
+          "profile_photo": "Percorso foto profilo predefinita",
+          "profile_name": "Nome profilo predefinito"
+        }
+      },
+      "session_import": {
+        "title": "Telegram VoIP - Importa Sessione",
+        "description": "Importa un file di sessione Telegram esistente.",
+        "data": {
+          "session_file_path": "Percorso file sessione (es. /config/my_session.session)",
+          "default_target": "Destinatario predefinito (es. @username)",
+          "session_dir": "Directory sessione",
+          "profile_photo": "Percorso foto profilo predefinita",
+          "profile_name": "Nome profilo predefinito"
+        }
+      },
+      "code": {
+        "title": "Telegram VoIP - Codice di Verifica",
+        "description": "Inserisci il codice di verifica inviato al tuo telefono.",
+        "data": {
+          "code": "Codice di verifica"
+        }
+      },
+      "password": {
+        "title": "Telegram VoIP - Password 2FA",
+        "description": "Inserisci la tua password di autenticazione a due fattori.",
+        "data": {
+          "password": "Password 2FA"
+        }
+      }
+    },
+    "error": {
+      "invalid_code": "Codice di verifica non valido",
+      "invalid_password": "Password 2FA non valida",
+      "session_file_not_found": "File di sessione non trovato nel percorso specificato",
+      "invalid_session_file": "File di sessione non valido o corrotto",
+      "unknown": "Errore imprevisto"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opzioni Telegram VoIP",
+        "description": "Configura impostazioni avanzate per le chiamate Telegram VoIP.",
+        "data": {
+          "default_language": "Lingua TTS predefinita",
+          "ffmpeg_path": "Percorso eseguibile FFmpeg",
+          "profile_photo": "Percorso foto profilo predefinita (da ripristinare dopo le chiamate)",
+          "profile_name": "Nome profilo predefinito (da ripristinare dopo le chiamate, lascia vuoto per mantenere l'originale)",
+          "ring_timeout": "Timeout squillo (secondi)",
+          "max_duration": "Durata massima chiamata (secondi)",
+          "init_bitrate": "Bitrate iniziale",
+          "max_bitrate": "Bitrate massimo",
+          "min_bitrate": "Bitrate minimo",
+          "buf_size": "Dimensione buffer",
+          "timeout": "Timeout"
+        }
+      }
+    }
+  },
+  "selector": {
+    "auth_method": {
+      "options": {
+        "api": "API ID/Hash (nuova autenticazione)",
+        "session_file": "Importa file di sessione (già autenticato)"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "call_state": {
+        "name": "Stato chiamata"
+      },
+      "call_topic": {
+        "name": "Argomento chiamata"
+      },
+      "call_peer": {
+        "name": "Destinatario"
+      },
+      "last_error": {
+        "name": "Ultimo errore"
+      }
+    }
+  }
+}
