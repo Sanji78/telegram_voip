@@ -123,6 +123,25 @@ From the integration options you can configure:
 
 ---
 
+## 🗣️ Supported languages (TTS)
+
+The `language` field of the `telegram_voip.call` service supports the following `gTTS` language codes:
+
+- `en` — English  
+- `it` — Italian  
+- `es` — Spanish  
+- `fr` — French  
+- `de` — German  
+- `pt` — Portuguese  
+- `zh` — Chinese  
+- `ja` — Japanese  
+
+If you don’t specify `language`, the integration uses the configured **Default language** option.
+
+> Tip: common aliases like `jp`, `cn`, `eng`, `ita`, etc. are **not** valid codes here—use the codes above.
+
+---
+
 ## 🧪 Supported versions
 - Home Assistant: **2024.8** or newer (earlier may work, untested).
 
