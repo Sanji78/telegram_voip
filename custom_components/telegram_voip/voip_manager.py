@@ -97,8 +97,10 @@ class TelegramVoipManager:
         if self._client is not None:
             try:
                 await asyncio.sleep(0.5)
-                await self._client.stop()
+                await asyncio.wait_for(self._client.stop(), timeout=5.0)  # Add timeout
                 _LOGGER.info("Pyrogram client stopped")
+            except asyncio.TimeoutError:
+                _LOGGER.warning("Pyrogram client stop() timed out in shutdown")
             except Exception as ex:
                 _LOGGER.error(f"Error stopping Pyrogram client: {ex}")
         self._client = None
@@ -107,18 +109,25 @@ class TelegramVoipManager:
         await asyncio.sleep(0.5)
         gc.collect()
         _LOGGER.info("After gc.collect()")
-    
+        
     async def async_hangup(self) -> None:
         _LOGGER.info("Pyrogram hangup")
         self.coordinator.set_state(**{SENSOR_CALL_STATE: CALL_ST_ENDING})
         if self._call is not None:
             try:
-                discard = getattr(self._call, "discard", None)
-                if callable(discard):
-                    discard()
-                stop = getattr(self._call, "stop", None)
-                if callable(stop):
-                    stop()
+                # Run call cleanup in executor to avoid blocking
+                def _cleanup_call(call_obj):
+                    try:
+                        discard = getattr(call_obj, "discard", None)
+                        if callable(discard):
+                            discard()
+                        stop = getattr(call_obj, "stop", None)
+                        if callable(stop):
+                            stop()
+                    except Exception as e:
+                        _LOGGER.error("Error stopping call: %s", e)
+                
+                await self.hass.async_add_executor_job(_cleanup_call, self._call)
             except Exception as e:
                 self.coordinator.set_state(**{SENSOR_LAST_ERROR: str(e)})
 
@@ -126,6 +135,13 @@ class TelegramVoipManager:
         if self._call_task:
             try:
                 await asyncio.wait_for(self._call_task, timeout=10)
+            except asyncio.TimeoutError:
+                _LOGGER.warning("Call task did not finish within timeout, cancelling")
+                self._call_task.cancel()
+                try:
+                    await self._call_task
+                except asyncio.CancelledError:
+                    pass
             except Exception:
                 pass
         self._call_task = None
@@ -331,12 +347,8 @@ class TelegramVoipManager:
                         
                         # Update profile photo if image parameter is provided
                         if image and os.path.exists(image):
-                            await self.hass.async_add_executor_job(
-                                self._set_profile_photo_sync,
-                                self._client,
-                                image
-                            )
-                            _LOGGER.info("Updated profile photo with: %s", image)      
+                            await self._set_profile_photo_async(self._client, image)
+                            _LOGGER.info("Updated profile photo with: %s", image)    
                             
                         # Verify changes
                         me_updated = await self._client.get_me()
@@ -348,7 +360,10 @@ class TelegramVoipManager:
 
                 t0 = asyncio.get_running_loop().time()
                 _LOGGER.info("TGVOIP: start_call(%r) ...", resolved)
-                self._call = await self._voip_service.start_call(resolved)
+                self._call = await asyncio.wait_for(
+                    self._voip_service.start_call(resolved), 
+                    timeout=30.0
+                )
                 _LOGGER.info("TGVOIP: start_call returned in %.3fs; call=%r", asyncio.get_running_loop().time() - t0, self._call)
 
                 # Reset state from previous call
@@ -437,11 +452,7 @@ class TelegramVoipManager:
                     
                     # Restore original photo if configured
                     if restore_photo_path and os.path.exists(restore_photo_path):
-                        await self.hass.async_add_executor_job(
-                            self._set_profile_photo_sync,
-                            self._client,
-                            restore_photo_path
-                        )
+                        await self._set_profile_photo_async(self._client, restore_photo_path)
                         _LOGGER.info("Restored profile photo from: %s", restore_photo_path)
                     
 
@@ -455,9 +466,11 @@ class TelegramVoipManager:
             try:
                 if self._client is not None:
                     await asyncio.sleep(0.5)
-                    await self._client.stop()
-            except Exception:
-                pass
+                    await asyncio.wait_for(self._client.stop(), timeout=5.0)
+            except asyncio.TimeoutError:
+                _LOGGER.warning("Pyrogram client stop() timed out")
+            except Exception as e:
+                _LOGGER.error("Error stopping client: %s", e)
             self._client = None
             self._voip_service = None
             self._call = None
@@ -474,27 +487,33 @@ class TelegramVoipManager:
         try:
             @call.on_call_state_changed
             def _state_changed(_call, state):
-                self._call_state_raw = str(state)
-                _LOGGER.info("TGVOIP: state=%s", self._call_state_raw)
+                try:  # Add try-except to prevent callback crashes
+                    self._call_state_raw = str(state)
+                    _LOGGER.info("TGVOIP: state=%s", self._call_state_raw)
 
-                if self._is_terminal_state(self._call_state_raw):
-                    self.coordinator.set_state(**{
-                        SENSOR_CALL_STATE: CALL_ST_ERROR,
-                        SENSOR_LAST_ERROR: f"Call ended: {self._call_state_raw}",
-                    })
-                    self._stop_event.set()
-                    return
+                    if self._is_terminal_state(self._call_state_raw):
+                        self.coordinator.set_state(**{
+                            SENSOR_CALL_STATE: CALL_ST_ERROR,
+                            SENSOR_LAST_ERROR: f"Call ended: {self._call_state_raw}",
+                        })
+                        self._stop_event.set()
+                        return
 
-                st = self._call_state_raw.lower()
-                if "connected" in st or "active" in st or "established" in st:
-                    self.coordinator.set_state(**{SENSOR_CALL_STATE: CALL_ST_IN_CALL})
-                elif "ring" in st:
-                    self.coordinator.set_state(**{SENSOR_CALL_STATE: CALL_ST_RINGING})
+                    st = self._call_state_raw.lower()
+                    if "connected" in st or "active" in st or "established" in st:
+                        self.coordinator.set_state(**{SENSOR_CALL_STATE: CALL_ST_IN_CALL})
+                    elif "ring" in st:
+                        self.coordinator.set_state(**{SENSOR_CALL_STATE: CALL_ST_RINGING})
+                except Exception as ex:
+                    _LOGGER.error("Error in state_changed callback: %s", ex, exc_info=True)
 
             @call.on_call_ended
             def _ended(_call):
-                _LOGGER.info("TGVOIP: call ended callback")
-                self._stop_event.set()
+                try:
+                    _LOGGER.info("TGVOIP: call ended callback")
+                    self._stop_event.set()
+                except Exception as ex:
+                    _LOGGER.error("Error in call_ended callback: %s", ex, exc_info=True)
         except Exception:
             _LOGGER.info("TGVOIP: failed attaching callbacks")
 
@@ -524,15 +543,9 @@ class TelegramVoipManager:
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
 
     @staticmethod
-    def _set_profile_photo_sync(client, photo_path: str) -> None:
-        """Synchronous wrapper for set_profile_photo to avoid blocking warnings."""
-        import asyncio
-        
-        # Pyrogram wraps methods with @sync decorator
-        # We need to call it and let it handle the async execution
-        # Just call it directly - the sync wrapper handles everything
+    async def _set_profile_photo_async(client, photo_path: str) -> None:
+        """Async wrapper for set_profile_photo."""
         try:
-            # The method is already sync-wrapped by Pyrogram, just call it
-            client.set_profile_photo(photo=photo_path)
+            await client.set_profile_photo(photo=photo_path)
         except Exception as e:
             raise e
