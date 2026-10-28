@@ -113,21 +113,9 @@ class TelegramVoipManager:
     async def async_hangup(self) -> None:
         _LOGGER.info("Pyrogram hangup")
         self.coordinator.set_state(**{SENSOR_CALL_STATE: CALL_ST_ENDING})
-        if self._call is not None:
+        if self._call is not None and self._voip_service is not None:
             try:
-                # Run call cleanup in executor to avoid blocking
-                def _cleanup_call(call_obj):
-                    try:
-                        discard = getattr(call_obj, "discard", None)
-                        if callable(discard):
-                            discard()
-                        stop = getattr(call_obj, "stop", None)
-                        if callable(stop):
-                            stop()
-                    except Exception as e:
-                        _LOGGER.error("Error stopping call: %s", e)
-                
-                await self.hass.async_add_executor_job(_cleanup_call, self._call)
+                await self._voip_service.leave_call(self._call)
             except Exception as e:
                 self.coordinator.set_state(**{SENSOR_LAST_ERROR: str(e)})
 
@@ -254,7 +242,7 @@ class TelegramVoipManager:
             return
 
         from pyrogram import Client
-        from tgvoip_pyrogram import VoIPFileStreamService
+        from pytgcalls import PyTgCalls
 
         session_name = self._get_cfg(CONF_SESSION_NAME, "ha_telegram_voip")
         session_dir = self._get_cfg(CONF_SESSION_DIR, "/config/.telegram_voip")
@@ -274,7 +262,24 @@ class TelegramVoipManager:
             api_hash=str(api_hash) if api_hash else "",
             workdir=session_dir,
         )
-        self._voip_service = VoIPFileStreamService(self._client, receive_calls=False)
+        self._voip_service = PyTgCalls(self._client)
+
+        @self._voip_service.on_update()
+        async def _on_update(_, update):
+            name = type(update).__name__
+            try:
+                st = getattr(update, "status", None)
+                status = (getattr(st, "name", None) or "") if st is not None else ""
+            except Exception:
+                status = ""
+            self._call_state_raw = f"{name} {status}"
+            _LOGGER.info("PYTGCALLS: %s", self._call_state_raw)
+            if name == "StreamEnded" or any(
+                x in status for x in ("DISCARDED_CALL", "BUSY_CALL", "LEFT_CALL", "CLOSED_VOICE_CHAT")
+            ):
+                if "BUSY" in status or "DISCARDED" in status:
+                    self.coordinator.set_state(**{SENSOR_LAST_ERROR: f"Call ended: {status}"})
+                self._stop_event.set()
 
     async def _wait_connected(self, timeout: float = 25.0) -> bool:
         loop = asyncio.get_running_loop()
@@ -307,13 +312,7 @@ class TelegramVoipManager:
             
             await self._ensure_client()
 
-            from tgvoip import VoIPServerConfig
-            init_bitrate = int(self._get_cfg(CONF_INIT_BITRATE, DEFAULT_INIT_BITRATE))
-            max_bitrate = int(self._get_cfg(CONF_MAX_BITRATE, DEFAULT_MAX_BITRATE))
-            min_bitrate = int(self._get_cfg(CONF_MIN_BITRATE, DEFAULT_MIN_BITRATE))
-            buf_size = int(self._get_cfg(CONF_BUF_SIZE, DEFAULT_BUF_SIZE))
-            timeout = int(self._get_cfg(CONF_TIMEOUT, DEFAULT_TIMEOUT))
-            VoIPServerConfig.set_bitrate_config(init_bitrate, max_bitrate, min_bitrate, buf_size, timeout)
+            # bitrate/buffer options were libtgvoip-specific; tgcalls manages them itself
 
             ffmpeg_path = self._get_cfg(CONF_FFMPEG_PATH, "ffmpeg")
 
@@ -323,10 +322,9 @@ class TelegramVoipManager:
                 raw_path = os.path.join(td, "input.raw")
 
                 await self.hass.async_add_executor_job(self._tts_to_mp3, message, language, mp3_path)
-                await self.hass.async_add_executor_job(self._ffmpeg_mp3_to_raw, ffmpeg_path, mp3_path, raw_path)
 
                 _LOGGER.debug("Starting pyrogram client (start())")
-                await self._client.start()
+                await self._voip_service.start()
 
                 self.coordinator.set_state(**{SENSOR_CALL_STATE: CALL_ST_RINGING})
                 resolved = await self._resolve_target(target)
@@ -358,55 +356,35 @@ class TelegramVoipManager:
                     except Exception as e:
                         _LOGGER.error("Could not update profile name/photo: %s", e, exc_info=True)
 
-                t0 = asyncio.get_running_loop().time()
-                _LOGGER.info("TGVOIP: start_call(%r) ...", resolved)
-                self._call = await asyncio.wait_for(
-                    self._voip_service.start_call(resolved), 
-                    timeout=30.0
-                )
-                _LOGGER.info("TGVOIP: start_call returned in %.3fs; call=%r", asyncio.get_running_loop().time() - t0, self._call)
-
-                # Reset state from previous call
+                from pytgcalls.types import MediaStream
+                self._call = resolved
                 self._call_state_raw = None
-                self._stop_event.clear()  # ← ADD THIS TOO
-
-                # Detach any old callbacks before attaching new ones
+                self._stop_event.clear()
+                _LOGGER.info("PYTGCALLS: play(%r) ...", resolved)
                 try:
-                    # Give old call's threads time to finish
-                    await asyncio.sleep(0.2)
+                    await asyncio.wait_for(
+                        self._voip_service.play(resolved, MediaStream(mp3_path)),
+                        timeout=ring_timeout + 10,
+                    )
+                except asyncio.TimeoutError:
+                    try:
+                        await self._voip_service.leave_call(resolved)
+                    except Exception:
+                        pass
+                    raise RuntimeError(f"No answer within {ring_timeout + 10}s")
+                except Exception as e:
+                    if type(e).__name__ in ("CallBusy", "CallDeclined"):
+                        raise RuntimeError("Call declined or user busy") from e
+                    raise
+                self.coordinator.set_state(**{SENSOR_CALL_STATE: CALL_ST_IN_CALL})
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=max_duration)
+                except asyncio.TimeoutError:
+                    pass
+                try:
+                    await self._voip_service.leave_call(resolved)
                 except Exception:
                     pass
-                    
-                self._attach_call_callbacks()
-
-                # Wait for call to connect OR fail (busy/discard/etc)
-                connected = await self._wait_connected(timeout=25.0)
-                if not connected:
-                    # Stop quickly so "call already in progress" doesn't happen
-                    raise RuntimeError(f"Call did not connect (state={self._call_state_raw})")
-
-                out_path = os.path.join(td, "output.raw")
-
-                size = os.path.getsize(raw_path)
-                dur = size / 96000.0
-                _LOGGER.info("Audio raw size=%d bytes, expected duration=%.2fs", size, dur)
-
-                _LOGGER.info("TGVOIP: play() (executor)")
-                await self.hass.async_add_executor_job(self._call.play, raw_path)
-                await self.hass.async_add_executor_job(self._call.play_on_hold, [raw_path])
-                await self.hass.async_add_executor_job(self._call.set_output_file, out_path)
-
-                started = asyncio.get_running_loop().time()
-                ringing_deadline = started + ring_timeout
-                end_deadline = started + max_duration
-
-                while not self._stop_event.is_set():
-                    now = asyncio.get_running_loop().time()
-                    if now >= end_deadline:
-                        break
-                    if (self.coordinator.data.get(SENSOR_CALL_STATE) == CALL_ST_RINGING and now >= ringing_deadline):
-                        break
-                    await asyncio.sleep(0.5)
 
             finally:
                 await self.hass.async_add_executor_job(self._cleanup_tempdir, td)
