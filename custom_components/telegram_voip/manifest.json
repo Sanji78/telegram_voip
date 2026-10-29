@@ -10,8 +10,8 @@
   "requirements": [
     "stefano-pyrogram==2.2.0",
     "stefano-tgcrypto>=1.3.0",
-    "py-tgcalls==3.0.0",
+    "stefano-py-tgcalls==3.0.1",
     "gTTS==2.5.0"
   ],
-  "version": "2.0.0"
+  "version": "2.0.1"
 }
