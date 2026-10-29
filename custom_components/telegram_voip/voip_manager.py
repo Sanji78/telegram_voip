@@ -274,7 +274,13 @@ class TelegramVoipManager:
                 status = ""
             self._call_state_raw = f"{name} {status}"
             _LOGGER.info("PYTGCALLS: %s", self._call_state_raw)
-            if name == "StreamEnded" or any(
+            if name == "StreamEnded":
+                ended = getattr(self, "_stream_ended", None)
+                if ended is not None:
+                    ended.set()
+                else:
+                    self._stop_event.set()
+            elif any(
                 x in status for x in ("DISCARDED_CALL", "BUSY_CALL", "LEFT_CALL", "CLOSED_VOICE_CHAT")
             ):
                 if "BUSY" in status or "DISCARDED" in status:
@@ -360,6 +366,7 @@ class TelegramVoipManager:
                 self._call = resolved
                 self._call_state_raw = None
                 self._stop_event.clear()
+                self._stream_ended = asyncio.Event()
                 _LOGGER.info("PYTGCALLS: play(%r) ...", resolved)
                 try:
                     await asyncio.wait_for(
@@ -377,10 +384,30 @@ class TelegramVoipManager:
                         raise RuntimeError("Call declined or user busy") from e
                     raise
                 self.coordinator.set_state(**{SENSOR_CALL_STATE: CALL_ST_IN_CALL})
-                try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=max_duration)
-                except asyncio.TimeoutError:
-                    pass
+                loop = asyncio.get_running_loop()
+                end_time = loop.time() + float(max_duration)
+                while not self._stop_event.is_set():
+                    remaining = end_time - loop.time()
+                    if remaining <= 0:
+                        break
+                    stop_task = asyncio.ensure_future(self._stop_event.wait())
+                    ended_task = asyncio.ensure_future(self._stream_ended.wait())
+                    done, pending = await asyncio.wait(
+                        {stop_task, ended_task},
+                        timeout=remaining,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for t in pending:
+                        t.cancel()
+                    if not done or self._stop_event.is_set():
+                        break
+                    self._stream_ended.clear()
+                    _LOGGER.info("PYTGCALLS: replaying message")
+                    try:
+                        await self._voip_service.play(resolved, MediaStream(mp3_path))
+                    except Exception as e:
+                        _LOGGER.warning("Replay failed: %s", e)
+                        break
                 try:
                     await self._voip_service.leave_call(resolved)
                 except Exception:
